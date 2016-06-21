@@ -22,14 +22,16 @@ import java.lang.reflect.Type;
 import java.lang.reflect.TypeVariable;
 import java.lang.reflect.WildcardType;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-
+import javax.lang.model.element.Modifier;
 import javax.lang.model.element.TypeElement;
 import javax.lang.model.element.TypeParameterElement;
 import javax.lang.model.type.ArrayType;
 import javax.lang.model.type.DeclaredType;
+import javax.lang.model.type.ErrorType;
 import javax.lang.model.type.NoType;
 import javax.lang.model.type.PrimitiveType;
 import javax.lang.model.type.TypeKind;
@@ -87,18 +89,69 @@ public class TypeName {
 
   /** The name of this type if it is a keyword, or null. */
   private final String keyword;
+  public final List<AnnotationSpec> annotations;
+
+  /** Lazily-initialized toString of this type name. */
+  private String cachedString;
 
   private TypeName(String keyword) {
+    this(keyword, new ArrayList<AnnotationSpec>());
+  }
+
+  private TypeName(String keyword, List<AnnotationSpec> annotations) {
     this.keyword = keyword;
+    this.annotations = Util.immutableList(annotations);
   }
 
   // Package-private constructor to prevent third-party subclasses.
-  TypeName() {
-    this(null);
+  TypeName(List<AnnotationSpec> annotations) {
+    this(null, annotations);
   }
 
+  public final TypeName annotated(AnnotationSpec... annotations) {
+    return annotated(Arrays.asList(annotations));
+  }
+
+  public TypeName annotated(List<AnnotationSpec> annotations) {
+    Util.checkNotNull(annotations, "annotations == null");
+    return new TypeName(keyword, concatAnnotations(annotations));
+  }
+
+  public TypeName withoutAnnotations() {
+    return new TypeName(keyword);
+  }
+
+  protected final List<AnnotationSpec> concatAnnotations(List<AnnotationSpec> annotations) {
+    List<AnnotationSpec> allAnnotations = new ArrayList<>(this.annotations);
+    allAnnotations.addAll(annotations);
+    return allAnnotations;
+  }
+
+  public boolean isAnnotated() {
+    return !annotations.isEmpty();
+  }
+
+  /**
+   * Returns true if this is a primitive type like {@code int}. Returns false for all other types
+   * types including boxed primitives and {@code void}.
+   */
   public boolean isPrimitive() {
     return keyword != null && this != VOID;
+  }
+
+  /**
+   * Returns true if this is a boxed primitive type like {@code Integer}. Returns false for all
+   * other types types including unboxed primitives and {@code java.lang.Void}.
+   */
+  public boolean isBoxedPrimitive() {
+    return this.equals(BOXED_BOOLEAN)
+        || this.equals(BOXED_BYTE)
+        || this.equals(BOXED_SHORT)
+        || this.equals(BOXED_INT)
+        || this.equals(BOXED_LONG)
+        || this.equals(BOXED_CHAR)
+        || this.equals(BOXED_FLOAT)
+        || this.equals(BOXED_DOUBLE);
   }
 
   /**
@@ -139,30 +192,45 @@ public class TypeName {
     throw new UnsupportedOperationException("cannot unbox " + this);
   }
 
-  @Override public boolean equals(Object o) {
+  @Override public final boolean equals(Object o) {
     if (this == o) return true;
     if (o == null) return false;
     if (getClass() != o.getClass()) return false;
     return toString().equals(o.toString());
   }
 
-  @Override public int hashCode() {
+  @Override public final int hashCode() {
     return toString().hashCode();
   }
 
   @Override public final String toString() {
-    try {
-      StringBuilder result = new StringBuilder();
-      emit(new CodeWriter(result));
-      return result.toString();
-    } catch (IOException e) {
-      throw new AssertionError();
+    String result = cachedString;
+    if (result == null) {
+      try {
+        StringBuilder resultBuilder = new StringBuilder();
+        CodeWriter codeWriter = new CodeWriter(resultBuilder);
+        emitAnnotations(codeWriter);
+        emit(codeWriter);
+        result = resultBuilder.toString();
+        cachedString = result;
+      } catch (IOException e) {
+        throw new AssertionError();
+      }
     }
+    return result;
   }
 
   CodeWriter emit(CodeWriter out) throws IOException {
     if (keyword == null) throw new AssertionError();
     return out.emitAndIndent(keyword);
+  }
+
+  CodeWriter emitAnnotations(CodeWriter out) throws IOException {
+    for (AnnotationSpec annotation : annotations) {
+      annotation.emit(out, true);
+      out.emit(" ");
+    }
+    return out;
   }
 
   /** Returns a type name equivalent to {@code mirror}. */
@@ -198,13 +266,28 @@ public class TypeName {
 
       @Override public TypeName visitDeclared(DeclaredType t, Void p) {
         ClassName rawType = ClassName.get((TypeElement) t.asElement());
-        if (t.getTypeArguments().isEmpty()) return rawType;
+        TypeMirror enclosingType = t.getEnclosingType();
+        TypeName enclosing =
+            (enclosingType.getKind() != TypeKind.NONE)
+                    && !t.asElement().getModifiers().contains(Modifier.STATIC)
+                ? enclosingType.accept(this, null)
+                : null;
+        if (t.getTypeArguments().isEmpty() && !(enclosing instanceof ParameterizedTypeName)) {
+          return rawType;
+        }
 
         List<TypeName> typeArgumentNames = new ArrayList<>();
         for (TypeMirror mirror : t.getTypeArguments()) {
           typeArgumentNames.add(get(mirror, typeVariables));
         }
-        return new ParameterizedTypeName(rawType, typeArgumentNames);
+        return enclosing instanceof ParameterizedTypeName
+            ? ((ParameterizedTypeName) enclosing).nestedClass(
+            rawType.simpleName(), typeArgumentNames)
+            : new ParameterizedTypeName(null, rawType, typeArgumentNames);
+      }
+
+      @Override public TypeName visitError(ErrorType t, Void p) {
+        return visitDeclared(t, p);
       }
 
       @Override public ArrayTypeName visitArray(ArrayType t, Void p) {
@@ -232,6 +315,10 @@ public class TypeName {
 
   /** Returns a type name equivalent to {@code type}. */
   public static TypeName get(Type type) {
+    return get(type, new LinkedHashMap<Type, TypeVariableName>());
+  }
+
+  static TypeName get(Type type, Map<Type, TypeVariableName> map) {
     if (type instanceof Class<?>) {
       Class<?> classType = (Class<?>) type;
       if (type == void.class) return VOID;
@@ -243,20 +330,20 @@ public class TypeName {
       if (type == char.class) return CHAR;
       if (type == float.class) return FLOAT;
       if (type == double.class) return DOUBLE;
-      if (classType.isArray()) return ArrayTypeName.of(get(classType.getComponentType()));
+      if (classType.isArray()) return ArrayTypeName.of(get(classType.getComponentType(), map));
       return ClassName.get(classType);
 
     } else if (type instanceof ParameterizedType) {
-      return ParameterizedTypeName.get((ParameterizedType) type);
+      return ParameterizedTypeName.get((ParameterizedType) type, map);
 
     } else if (type instanceof WildcardType) {
-      return WildcardTypeName.get((WildcardType) type);
+      return WildcardTypeName.get((WildcardType) type, map);
 
     } else if (type instanceof TypeVariable<?>) {
-      return TypeVariableName.get((TypeVariable<?>) type);
+      return TypeVariableName.get((TypeVariable<?>) type, map);
 
     } else if (type instanceof GenericArrayType) {
-      return ArrayTypeName.get((GenericArrayType) type);
+      return ArrayTypeName.get((GenericArrayType) type, map);
 
     } else {
       throw new IllegalArgumentException("unexpected type: " + type);
@@ -265,9 +352,13 @@ public class TypeName {
 
   /** Converts an array of types to a list of type names. */
   static List<TypeName> list(Type[] types) {
+    return list(types, new LinkedHashMap<Type, TypeVariableName>());
+  }
+
+  static List<TypeName> list(Type[] types, Map<Type, TypeVariableName> map) {
     List<TypeName> result = new ArrayList<>(types.length);
     for (Type type : types) {
-      result.add(get(type));
+      result.add(get(type, map));
     }
     return result;
   }

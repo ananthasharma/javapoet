@@ -29,6 +29,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
+import static com.squareup.javapoet.Util.characterLiteralWithoutSingleQuotes;
 import static com.squareup.javapoet.Util.checkNotNull;
 
 import javax.lang.model.element.AnnotationMirror;
@@ -127,7 +128,7 @@ public final class AnnotationSpec {
         }
         if (value.getClass().isArray()) {
           for (int i = 0; i < Array.getLength(value); i++) {
-            addAnnotationValue(builder, method.getName(), Array.get(value, i));
+            builder.addMemberForValue(method.getName(), Array.get(value, i));
           }
           continue;
         }
@@ -135,7 +136,7 @@ public final class AnnotationSpec {
           builder.addMember(method.getName(), "$L", get((Annotation) value));
           continue;
         }
-        addAnnotationValue(builder, method.getName(), value);
+        builder.addMemberForValue(method.getName(), value);
       }
     } catch (Exception e) {
       throw new RuntimeException("Reflecting " + annotation + " failed!", e);
@@ -143,16 +144,6 @@ public final class AnnotationSpec {
     return builder.build();
   }
 
-  private static Builder addAnnotationValue(Builder builder, String name, Object value) {
-    if (value instanceof Class<?>) return builder.addMember(name, "$T.class", value);
-    if (value instanceof Enum) {
-      return builder.addMember(name, "$T.$L", value.getClass(), ((Enum<?>) value).name());
-    }
-    if (value instanceof String) return builder.addMember(name, "$S", value);
-    if (value instanceof Float) return builder.addMember(name, "$Lf", value);
-    // return literal/toString anyway
-    return builder.addMember(name, "$L", value);
-  }
   public static AnnotationSpec get(AnnotationMirror annotation) {
     TypeElement element = (TypeElement) annotation.getAnnotationType().asElement();
     AnnotationSpec.Builder builder = AnnotationSpec.builder(ClassName.get(element));
@@ -160,7 +151,7 @@ public final class AnnotationSpec {
     for (ExecutableElement executableElement : annotation.getElementValues().keySet()) {
       String name = executableElement.getSimpleName().toString();
       AnnotationValue value = annotation.getElementValues().get(executableElement);
-      value.accept(visitor, new Entry(name, value));
+      value.accept(visitor, name);
     }
     return builder.build();
   }
@@ -213,7 +204,7 @@ public final class AnnotationSpec {
     }
 
     public Builder addMember(String name, String format, Object... args) {
-      return addMember(name, CodeBlock.builder().add(format, args).build());
+      return addMember(name, CodeBlock.of(format, args));
     }
 
     public Builder addMember(String name, CodeBlock codeBlock) {
@@ -226,25 +217,41 @@ public final class AnnotationSpec {
       return this;
     }
 
+    /**
+     * Delegates to {@link #addMember(String, String, Object...)}, with parameter {@code format}
+     * depending on the given {@code value} object. Falls back to {@code "$L"} literal format if
+     * the class of the given {@code value} object is not supported.
+     */
+    Builder addMemberForValue(String memberName, Object value) {
+      checkNotNull(memberName, "memberName == null");
+      checkNotNull(value, "value == null, constant non-null value expected for %s", memberName);
+      if (value instanceof Class<?>) {
+        return addMember(memberName, "$T.class", value);
+      }
+      if (value instanceof Enum) {
+        return addMember(memberName, "$T.$L", value.getClass(), ((Enum<?>) value).name());
+      }
+      if (value instanceof String) {
+        return addMember(memberName, "$S", value);
+      }
+      if (value instanceof Float) {
+        return addMember(memberName, "$Lf", value);
+      }
+      if (value instanceof Character) {
+        return addMember(memberName, "'$L'", characterLiteralWithoutSingleQuotes((char) value));
+      }
+      return addMember(memberName, "$L", value);
+    }
+
     public AnnotationSpec build() {
       return new AnnotationSpec(this);
-    }
-  }
-
-  private static class Entry {
-    final String name;
-    final AnnotationValue value;
-
-    Entry(String name, AnnotationValue value) {
-      this.name = name;
-      this.value = value;
     }
   }
 
   /**
    * Annotation value visitor adding members to the given builder instance.
    */
-  private static class Visitor extends SimpleAnnotationValueVisitor7<Builder, Entry> {
+  private static class Visitor extends SimpleAnnotationValueVisitor7<Builder, String> {
     final Builder builder;
 
     Visitor(Builder builder) {
@@ -252,25 +259,25 @@ public final class AnnotationSpec {
       this.builder = builder;
     }
 
-    @Override protected Builder defaultAction(Object o, Entry entry) {
-      return builder.addMember(entry.name, "$L", entry.value);
+    @Override protected Builder defaultAction(Object o, String name) {
+      return builder.addMemberForValue(name, o);
     }
 
-    @Override public Builder visitAnnotation(AnnotationMirror a, Entry entry) {
-      return builder.addMember(entry.name, "$L", get(a));
+    @Override public Builder visitAnnotation(AnnotationMirror a, String name) {
+      return builder.addMember(name, "$L", get(a));
     }
 
-    @Override public Builder visitEnumConstant(VariableElement c, Entry entry) {
-      return builder.addMember(entry.name, "$T.$L", c.asType(), c.getSimpleName());
+    @Override public Builder visitEnumConstant(VariableElement c, String name) {
+      return builder.addMember(name, "$T.$L", c.asType(), c.getSimpleName());
     }
 
-    @Override public Builder visitType(TypeMirror t, Entry entry) {
-      return builder.addMember(entry.name, "$T.class", t);
+    @Override public Builder visitType(TypeMirror t, String name) {
+      return builder.addMember(name, "$T.class", t);
     }
 
-    @Override public Builder visitArray(List<? extends AnnotationValue> values, Entry entry) {
+    @Override public Builder visitArray(List<? extends AnnotationValue> values, String name) {
       for (AnnotationValue value : values) {
-        value.accept(this, new Entry(entry.name, value));
+        value.accept(this, name);
       }
       return builder;
     }

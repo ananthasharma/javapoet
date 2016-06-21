@@ -274,7 +274,7 @@ ClassName list = ClassName.get("java.util", "List");
 ClassName arrayList = ClassName.get("java.util", "ArrayList");
 TypeName listOfHoverboards = ParameterizedTypeName.get(list, hoverboard);
 
-MethodSpec today = MethodSpec.methodBuilder("beyond")
+MethodSpec beyond = MethodSpec.methodBuilder("beyond")
     .returns(listOfHoverboards)
     .addStatement("$T result = new $T<>()", listOfHoverboards, arrayList)
     .addStatement("result.add(new $T())", hoverboard)
@@ -300,6 +300,62 @@ public final class HelloWorld {
     result.add(new Hoverboard());
     result.add(new Hoverboard());
     return result;
+  }
+}
+```
+
+#### Import static
+
+JavaPoet supports `import static`. It does it via explicitly collecting type member names. Let's
+enhance the previous example with some static sugar:
+
+```java
+...
+ClassName namedBoards = ClassName.get("com.mattel", "Hoverboard", "Boards");
+
+MethodSpec beyond = MethodSpec.methodBuilder("beyond")
+    .returns(listOfHoverboards)
+    .addStatement("$T result = new $T<>()", listOfHoverboards, arrayList)
+    .addStatement("result.add($T.createNimbus(2000))", hoverboard)
+    .addStatement("result.add($T.createNimbus(\"2001\"))", hoverboard)
+    .addStatement("result.add($T.createNimbus($T.THUNDERBOLT))", hoverboard, namedBoards)
+    .addStatement("$T.sort(result)", Collections.class)
+    .addStatement("return result.isEmpty() $T.emptyList() : result", Collections.class)
+    .build();
+
+TypeSpec hello = TypeSpec.classBuilder("HelloWorld")
+    .addMethod(beyond)
+    .build();
+
+JavaFile.builder("com.example.helloworld", hello)
+    .addStaticImport(hoverboard, "createNimbus")
+    .addStaticImport(namedBoards, "*")
+    .addStaticImport(Collections.class, "*")
+    .build();
+```
+
+JavaPoet will first add your `import static` block to the file as configured, match and mangle
+all calls accordingly and also import all other types as needed.
+
+```java
+package com.example.helloworld;
+
+import static com.mattel.Hoverboard.Boards.*;
+import static com.mattel.Hoverboard.createNimbus;
+import static java.util.Collections.*;
+
+import com.mattel.Hoverboard;
+import java.util.ArrayList;
+import java.util.List;
+
+class HelloWorld {
+  List<Hoverboard> beyond() {
+    List<Hoverboard> result = new ArrayList<>();
+    result.add(createNimbus(2000));
+    result.add(createNimbus("2001"));
+    result.add(createNimbus(THUNDERBOLT));
+    sort(result);
+    return result.isEmpty() ? emptyList() : result;
   }
 }
 ```
@@ -745,12 +801,12 @@ Download [the latest .jar][dl] or depend via Maven:
 <dependency>
   <groupId>com.squareup</groupId>
   <artifactId>javapoet</artifactId>
-  <version>1.3.0</version>
+  <version>1.7.0</version>
 </dependency>
 ```
 or Gradle:
 ```groovy
-compile 'com.squareup:javapoet:1.3.0'
+compile 'com.squareup:javapoet:1.7.0'
 ```
 
 Snapshots of the development version are available in [Sonatype's `snapshots` repository][snap].
@@ -789,7 +845,7 @@ JavaWriter continues to be available in [GitHub][javawriter] and [Maven Central]
 
  [dl]: https://search.maven.org/remote_content?g=com.squareup&a=javapoet&v=LATEST
  [snap]: https://oss.sonatype.org/content/repositories/snapshots/com/squareup/javapoet/
- [javadoc]: https://square.github.io/javapoet/javadoc/javapoet/
+ [javadoc]: https://square.github.io/javapoet/1.x/javapoet/
  [javawriter]: https://github.com/square/javapoet/tree/javawriter_2
  [javawriter_maven]: http://search.maven.org/#artifactdetails%7Ccom.squareup%7Cjavawriter%7C2.5.1%7Cjar
  [formatter]: http://developer.android.com/reference/java/util/Formatter.html

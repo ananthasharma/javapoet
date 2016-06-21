@@ -19,20 +19,22 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.EnumSet;
-import java.util.Formatter;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.ListIterator;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import javax.lang.model.SourceVersion;
 import javax.lang.model.element.Modifier;
 
 import static com.squareup.javapoet.Util.checkArgument;
 import static com.squareup.javapoet.Util.checkNotNull;
 import static com.squareup.javapoet.Util.checkState;
 import static com.squareup.javapoet.Util.join;
+import static com.squareup.javapoet.Util.stringLiteralWithDoubleQuotes;
 
 /**
  * Converts a {@link JavaFile} to a string suitable to both human- and javac-consumption. This
@@ -50,6 +52,8 @@ final class CodeWriter {
   private boolean comment = false;
   private String packageName = NO_PACKAGE;
   private final List<TypeSpec> typeSpecStack = new ArrayList<>();
+  private final Set<String> staticImportClassNames;
+  private final Set<String> staticImports;
   private final Map<String, ClassName> importedTypes;
   private final Map<String, ClassName> importableTypes = new LinkedHashMap<>();
   private final Set<String> referencedNames = new LinkedHashSet<>();
@@ -63,17 +67,23 @@ final class CodeWriter {
   int statementLine = -1;
 
   CodeWriter(Appendable out) {
-    this(out, "  ");
+    this(out, "  ", Collections.<String>emptySet());
   }
 
-  public CodeWriter(Appendable out, String indent) {
-    this(out, indent, Collections.<String, ClassName>emptyMap());
+  CodeWriter(Appendable out, String indent, Set<String> staticImports) {
+    this(out, indent, Collections.<String, ClassName>emptyMap(), staticImports);
   }
 
-  public CodeWriter(Appendable out, String indent, Map<String, ClassName> importedTypes) {
+  CodeWriter(Appendable out, String indent, Map<String, ClassName> importedTypes,
+      Set<String> staticImports) {
     this.out = checkNotNull(out, "out == null");
     this.indent = checkNotNull(indent, "indent == null");
     this.importedTypes = checkNotNull(importedTypes, "importedTypes == null");
+    this.staticImports = checkNotNull(staticImports, "staticImports == null");
+    this.staticImportClassNames = new LinkedHashSet<>();
+    for (String signature : staticImports) {
+      staticImportClassNames.add(signature.substring(0, signature.lastIndexOf('.')));
+    }
   }
 
   public Map<String, ClassName> importedTypes() {
@@ -192,13 +202,20 @@ final class CodeWriter {
     emit(">");
   }
 
+  public CodeWriter emit(String s) throws IOException {
+    return emitAndIndent(s);
+  }
+
   public CodeWriter emit(String format, Object... args) throws IOException {
-    return emit(CodeBlock.builder().add(format, args).build());
+    return emit(CodeBlock.of(format, args));
   }
 
   public CodeWriter emit(CodeBlock codeBlock) throws IOException {
     int a = 0;
-    for (String part : codeBlock.formatParts) {
+    ClassName deferredTypeName = null; // used by "import static" logic
+    ListIterator<String> partIterator = codeBlock.formatParts.listIterator();
+    while (partIterator.hasNext()) {
+      String part = partIterator.next();
       switch (part) {
         case "$L":
           emitLiteral(codeBlock.args.get(a++));
@@ -212,12 +229,27 @@ final class CodeWriter {
           String string = (String) codeBlock.args.get(a++);
           // Emit null as a literal null: no quotes.
           emitAndIndent(string != null
-              ? stringLiteral(string)
+              ? stringLiteralWithDoubleQuotes(string, indent)
               : "null");
           break;
 
         case "$T":
           TypeName typeName = (TypeName) codeBlock.args.get(a++);
+          if (typeName.isAnnotated()) {
+            typeName.emitAnnotations(this);
+            typeName = typeName.withoutAnnotations();
+          }
+          // defer "typeName.emit(this)" if next format part will be handled by the default case
+          if (typeName instanceof ClassName && partIterator.hasNext()) {
+            if (!codeBlock.formatParts.get(partIterator.nextIndex()).startsWith("$")) {
+              ClassName candidate = (ClassName) typeName;
+              if (staticImportClassNames.contains(candidate.canonicalName)) {
+                checkState(deferredTypeName == null, "pending type for static import?!");
+                deferredTypeName = candidate;
+                break;
+              }
+            }
+          }
           typeName.emit(this);
           break;
 
@@ -247,11 +279,47 @@ final class CodeWriter {
           break;
 
         default:
+          // handle deferred type
+          if (deferredTypeName != null) {
+            if (part.startsWith(".")) {
+              if (emitStaticImportMember(deferredTypeName.canonicalName, part)) {
+                // okay, static import hit and all was emitted, so clean-up and jump to next part
+                deferredTypeName = null;
+                break;
+              }
+            }
+            deferredTypeName.emit(this);
+            deferredTypeName = null;
+          }
           emitAndIndent(part);
           break;
       }
     }
     return this;
+  }
+
+  private static String extractMemberName(String part) {
+    checkArgument(Character.isJavaIdentifierStart(part.charAt(0)), "not an identifier: %s", part);
+    for (int i = 1; i <= part.length(); i++) {
+      if (!SourceVersion.isIdentifier(part.substring(0, i))) {
+        return part.substring(0, i - 1);
+      }
+    }
+    return part;
+  }
+
+  private boolean emitStaticImportMember(String canonical, String part) throws IOException {
+    String partWithoutLeadingDot = part.substring(1);
+    if (partWithoutLeadingDot.isEmpty()) return false;
+    char first = partWithoutLeadingDot.charAt(0);
+    if (!Character.isJavaIdentifierStart(first)) return false;
+    String explicit = canonical + "." + extractMemberName(partWithoutLeadingDot);
+    String wildcard = canonical + ".*";
+    if (staticImports.contains(explicit) || staticImports.contains(wildcard)) {
+      emitAndIndent(partWithoutLeadingDot);
+      return true;
+    }
+    return false;
   }
 
   private void emitLiteral(Object o) throws IOException {
@@ -289,6 +357,11 @@ final class CodeWriter {
       }
     }
 
+    // If the name resolved but wasn't a match, we're stuck with the fully qualified name.
+    if (nameResolved) {
+      return className.canonicalName;
+    }
+
     // If the class is in the same package, we're done.
     if (Objects.equals(packageName, className.packageName())) {
       referencedNames.add(className.topLevelClassName().simpleName());
@@ -296,7 +369,7 @@ final class CodeWriter {
     }
 
     // We'll have to use the fully-qualified name. Mark the type as importable for a future pass.
-    if (!javadoc && !nameResolved) {
+    if (!javadoc) {
       importableType(className);
     }
 
@@ -304,6 +377,9 @@ final class CodeWriter {
   }
 
   private void importableType(ClassName className) {
+    if (className.packageName().isEmpty()) {
+      return;
+    }
     ClassName topLevelClassName = className.topLevelClassName();
     String simpleName = topLevelClassName.simpleName();
     ClassName replaced = importableTypes.put(simpleName, topLevelClassName);
@@ -407,48 +483,5 @@ final class CodeWriter {
     Map<String, ClassName> result = new LinkedHashMap<>(importableTypes);
     result.keySet().removeAll(referencedNames);
     return result;
-  }
-
-  /** Returns the string literal representing {@code data}, including wrapping quotes. */
-  String stringLiteral(String value) {
-    StringBuilder result = new StringBuilder();
-    result.append('"');
-    for (int i = 0; i < value.length(); i++) {
-      char c = value.charAt(i);
-      switch (c) {
-        case '"':
-          result.append("\\\"");
-          break;
-        case '\\':
-          result.append("\\\\");
-          break;
-        case '\b':
-          result.append("\\b");
-          break;
-        case '\t':
-          result.append("\\t");
-          break;
-        case '\n':
-          result.append("\\n");
-          if (i + 1 < value.length()) {
-            result.append("\"\n").append(indent).append(indent).append("+ \"");
-          }
-          break;
-        case '\f':
-          result.append("\\f");
-          break;
-        case '\r':
-          result.append("\\r");
-          break;
-        default:
-          if (Character.isISOControl(c)) {
-            new Formatter(result).format("\\u%04x", (int) c);
-          } else {
-            result.append(c);
-          }
-      }
-    }
-    result.append('"');
-    return result.toString();
   }
 }

@@ -40,6 +40,11 @@ public final class ClassName extends TypeName implements Comparable<ClassName> {
   final String canonicalName;
 
   private ClassName(List<String> names) {
+    this(names, new ArrayList<AnnotationSpec>());
+  }
+
+  private ClassName(List<String> names, List<AnnotationSpec> annotations) {
+    super(annotations);
     for (int i = 1; i < names.size(); i++) {
       checkArgument(SourceVersion.isName(names.get(i)), "part '%s' is keyword", names.get(i));
     }
@@ -47,6 +52,14 @@ public final class ClassName extends TypeName implements Comparable<ClassName> {
     this.canonicalName = names.get(0).isEmpty()
         ? Util.join(".", names.subList(1, names.size()))
         : Util.join(".", names);
+  }
+
+  @Override public ClassName annotated(List<AnnotationSpec> annotations) {
+    return new ClassName(names, concatAnnotations(annotations));
+  }
+
+  @Override public TypeName withoutAnnotations() {
+    return new ClassName(names);
   }
 
   /** Returns the package name, like {@code "java.util"} for {@code Map.Entry}. */
@@ -187,15 +200,6 @@ public final class ClassName extends TypeName implements Comparable<ClassName> {
       type = type.getEnclosingElement();
     }
     return (PackageElement) type;
-  }
-
-  @Override public boolean equals(Object o) {
-    return o instanceof ClassName
-        && canonicalName.equals(((ClassName) o).canonicalName);
-  }
-
-  @Override public int hashCode() {
-    return canonicalName.hashCode();
   }
 
   @Override public int compareTo(ClassName o) {

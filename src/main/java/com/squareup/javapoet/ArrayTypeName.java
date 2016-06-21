@@ -18,9 +18,10 @@ package com.squareup.javapoet;
 import java.io.IOException;
 import java.lang.reflect.GenericArrayType;
 import java.lang.reflect.Type;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
-
 import javax.lang.model.element.TypeParameterElement;
 import javax.lang.model.type.ArrayType;
 
@@ -30,16 +31,20 @@ public final class ArrayTypeName extends TypeName {
   public final TypeName componentType;
 
   private ArrayTypeName(TypeName componentType) {
+    this(componentType, new ArrayList<AnnotationSpec>());
+  }
+
+  private ArrayTypeName(TypeName componentType, List<AnnotationSpec> annotations) {
+    super(annotations);
     this.componentType = checkNotNull(componentType, "rawType == null");
   }
 
-  @Override public boolean equals(Object o) {
-    return o instanceof ArrayTypeName
-        && ((ArrayTypeName) o).componentType.equals(componentType);
+  @Override public ArrayTypeName annotated(List<AnnotationSpec> annotations) {
+    return new ArrayTypeName(componentType, concatAnnotations(annotations));
   }
 
-  @Override public int hashCode() {
-    return 31 * componentType.hashCode();
+  @Override public TypeName withoutAnnotations() {
+    return new ArrayTypeName(componentType);
   }
 
   @Override CodeWriter emit(CodeWriter out) throws IOException {
@@ -68,6 +73,10 @@ public final class ArrayTypeName extends TypeName {
 
   /** Returns an array type equivalent to {@code type}. */
   public static ArrayTypeName get(GenericArrayType type) {
-    return ArrayTypeName.of(get(type.getGenericComponentType()));
+    return get(type, new LinkedHashMap<Type, TypeVariableName>());
+  }
+
+  static ArrayTypeName get(GenericArrayType type, Map<Type, TypeVariableName> map) {
+    return ArrayTypeName.of(get(type.getGenericComponentType(), map));
   }
 }

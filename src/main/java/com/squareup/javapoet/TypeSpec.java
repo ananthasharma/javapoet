@@ -52,6 +52,7 @@ public final class TypeSpec {
   public final Map<String, TypeSpec> enumConstants;
   public final List<FieldSpec> fieldSpecs;
   public final CodeBlock staticBlock;
+  public final CodeBlock initializerBlock;
   public final List<MethodSpec> methodSpecs;
   public final List<TypeSpec> typeSpecs;
   public final List<Element> originatingElements;
@@ -69,6 +70,7 @@ public final class TypeSpec {
     this.enumConstants = Util.immutableMap(builder.enumConstants);
     this.fieldSpecs = Util.immutableList(builder.fieldSpecs);
     this.staticBlock = builder.staticBlock.build();
+    this.initializerBlock = builder.initializerBlock.build();
     this.methodSpecs = Util.immutableList(builder.methodSpecs);
     this.typeSpecs = Util.immutableList(builder.typeSpecs);
 
@@ -88,12 +90,24 @@ public final class TypeSpec {
     return new Builder(Kind.CLASS, checkNotNull(name, "name == null"), null);
   }
 
+  public static Builder classBuilder(ClassName className) {
+    return classBuilder(checkNotNull(className, "className == null").simpleName());
+  }
+
   public static Builder interfaceBuilder(String name) {
     return new Builder(Kind.INTERFACE, checkNotNull(name, "name == null"), null);
   }
 
+  public static Builder interfaceBuilder(ClassName className) {
+    return interfaceBuilder(checkNotNull(className, "className == null").simpleName());
+  }
+
   public static Builder enumBuilder(String name) {
     return new Builder(Kind.ENUM, checkNotNull(name, "name == null"), null);
+  }
+
+  public static Builder enumBuilder(ClassName className) {
+    return enumBuilder(checkNotNull(className, "className == null").simpleName());
   }
 
   public static Builder anonymousClassBuilder(String typeArgumentsFormat, Object... args) {
@@ -104,6 +118,10 @@ public final class TypeSpec {
 
   public static Builder annotationBuilder(String name) {
     return new Builder(Kind.ANNOTATION, checkNotNull(name, "name == null"), null);
+  }
+
+  public static Builder annotationBuilder(ClassName className) {
+    return annotationBuilder(checkNotNull(className, "className == null").simpleName());
   }
 
   public Builder toBuilder() {
@@ -118,6 +136,8 @@ public final class TypeSpec {
     builder.fieldSpecs.addAll(fieldSpecs);
     builder.methodSpecs.addAll(methodSpecs);
     builder.typeSpecs.addAll(typeSpecs);
+    builder.initializerBlock.add(initializerBlock);
+    builder.staticBlock.add(staticBlock);
     return builder;
   }
 
@@ -234,6 +254,13 @@ public final class TypeSpec {
         firstMember = false;
       }
 
+      // Initializer block.
+      if (!initializerBlock.isEmpty()) {
+        if (!firstMember) codeWriter.emit("\n");
+        codeWriter.emit(initializerBlock);
+        firstMember = false;
+      }
+
       // Constructors.
       for (MethodSpec methodSpec : methodSpecs) {
         if (!methodSpec.isConstructor()) continue;
@@ -291,7 +318,7 @@ public final class TypeSpec {
     }
   }
 
-  private enum Kind {
+  public enum Kind {
     CLASS(
         Collections.<Modifier>emptySet(),
         Collections.<Modifier>emptySet(),
@@ -321,7 +348,7 @@ public final class TypeSpec {
     private final Set<Modifier> implicitTypeModifiers;
     private final Set<Modifier> asMemberModifiers;
 
-    private Kind(Set<Modifier> implicitFieldModifiers,
+    Kind(Set<Modifier> implicitFieldModifiers,
         Set<Modifier> implicitMethodModifiers,
         Set<Modifier> implicitTypeModifiers,
         Set<Modifier> asMemberModifiers) {
@@ -346,6 +373,7 @@ public final class TypeSpec {
     private final Map<String, TypeSpec> enumConstants = new LinkedHashMap<>();
     private final List<FieldSpec> fieldSpecs = new ArrayList<>();
     private final CodeBlock.Builder staticBlock = CodeBlock.builder();
+    private final CodeBlock.Builder initializerBlock = CodeBlock.builder();
     private final List<MethodSpec> methodSpecs = new ArrayList<>();
     private final List<TypeSpec> typeSpecs = new ArrayList<>();
     private final List<Element> originatingElements = new ArrayList<>();
@@ -456,8 +484,7 @@ public final class TypeSpec {
     }
 
     public Builder addField(FieldSpec fieldSpec) {
-      checkState(kind != Kind.ANNOTATION, "%s %s cannot have fields", kind, name);
-      if (kind == Kind.INTERFACE) {
+      if (kind == Kind.INTERFACE || kind == Kind.ANNOTATION) {
         requireExactlyOneOf(fieldSpec.modifiers, Modifier.PUBLIC, Modifier.PRIVATE);
         Set<Modifier> check = EnumSet.of(Modifier.STATIC, Modifier.FINAL);
         checkState(fieldSpec.modifiers.containsAll(check), "%s %s.%s requires modifiers %s",
@@ -480,6 +507,18 @@ public final class TypeSpec {
       return this;
     }
 
+    public Builder addInitializerBlock(CodeBlock block) {
+      if ((kind != Kind.CLASS && kind != Kind.ENUM)) {
+        throw new UnsupportedOperationException(kind + " can't have initializer blocks");
+      }
+      initializerBlock.add("{\n")
+          .indent()
+          .add(block)
+          .unindent()
+          .add("}\n");
+      return this;
+    }
+
     public Builder addMethods(Iterable<MethodSpec> methodSpecs) {
       checkArgument(methodSpecs != null, "methodSpecs == null");
       for (MethodSpec methodSpec : methodSpecs) {
@@ -493,8 +532,9 @@ public final class TypeSpec {
         requireExactlyOneOf(methodSpec.modifiers, Modifier.ABSTRACT, Modifier.STATIC, Util.DEFAULT);
         requireExactlyOneOf(methodSpec.modifiers, Modifier.PUBLIC, Modifier.PRIVATE);
       } else if (kind == Kind.ANNOTATION) {
-        checkState(methodSpec.modifiers.containsAll(kind.implicitMethodModifiers),
-            "%s %s.%s cannot have modifiers", kind, name, methodSpec.name);
+        checkState(methodSpec.modifiers.equals(kind.implicitMethodModifiers),
+            "%s %s.%s requires modifiers %s",
+            kind, name, methodSpec.name, kind.implicitMethodModifiers);
       }
       if (kind != Kind.ANNOTATION) {
         checkState(methodSpec.defaultValue == null, "%s %s.%s cannot have a default value",

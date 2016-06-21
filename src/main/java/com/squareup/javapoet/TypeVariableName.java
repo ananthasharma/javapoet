@@ -20,6 +20,7 @@ import java.lang.reflect.Type;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -35,6 +36,11 @@ public final class TypeVariableName extends TypeName {
   public final List<TypeName> bounds;
 
   private TypeVariableName(String name, List<TypeName> bounds) {
+    this(name, bounds, new ArrayList<AnnotationSpec>());
+  }
+
+  private TypeVariableName(String name, List<TypeName> bounds, List<AnnotationSpec> annotations) {
+    super(annotations);
     this.name = checkNotNull(name, "name == null");
     this.bounds = bounds;
 
@@ -43,21 +49,34 @@ public final class TypeVariableName extends TypeName {
     }
   }
 
+  @Override public TypeVariableName annotated(List<AnnotationSpec> annotations) {
+    return new TypeVariableName(name, bounds, annotations);
+  }
+
+  @Override public TypeName withoutAnnotations() {
+    return new TypeVariableName(name, bounds);
+  }
+
+  public TypeVariableName withBounds(Type... bounds) {
+    return withBounds(TypeName.list(bounds));
+  }
+
+  public TypeVariableName withBounds(TypeName... bounds) {
+    return withBounds(Arrays.asList(bounds));
+  }
+
+  public TypeVariableName withBounds(List<? extends TypeName> bounds) {
+    ArrayList<TypeName> newBounds = new ArrayList<>();
+    newBounds.addAll(this.bounds);
+    newBounds.addAll(bounds);
+    return new TypeVariableName(name, newBounds, annotations);
+  }
+
   private static TypeVariableName of(String name, List<TypeName> bounds) {
     // Strip java.lang.Object from bounds if it is present.
     List<TypeName> boundsNoObject = new ArrayList<>(bounds);
     boundsNoObject.remove(OBJECT);
     return new TypeVariableName(name, Collections.unmodifiableList(boundsNoObject));
-  }
-
-  @Override public boolean equals(Object o) {
-    return o instanceof TypeVariableName
-        && ((TypeVariableName) o).name.equals(name)
-        && ((TypeVariableName) o).bounds.equals(bounds);
-  }
-
-  @Override public int hashCode() {
-    return name.hashCode() ^ bounds.hashCode();
   }
 
   @Override CodeWriter emit(CodeWriter out) throws IOException {
@@ -126,6 +145,23 @@ public final class TypeVariableName extends TypeName {
 
   /** Returns type variable equivalent to {@code type}. */
   public static TypeVariableName get(java.lang.reflect.TypeVariable<?> type) {
-    return TypeVariableName.of(type.getName(), TypeName.list(type.getBounds()));
+    return get(type, new LinkedHashMap<Type, TypeVariableName>());
+  }
+
+  /** @see #get(java.lang.reflect.TypeVariable, Map) */
+  static TypeVariableName get(java.lang.reflect.TypeVariable<?> type,
+      Map<Type, TypeVariableName> map) {
+    TypeVariableName result = map.get(type);
+    if (result == null) {
+      List<TypeName> bounds = new ArrayList<>();
+      List<TypeName> visibleBounds = Collections.unmodifiableList(bounds);
+      result = new TypeVariableName(type.getName(), visibleBounds);
+      map.put(type, result);
+      for (Type bound : type.getBounds()) {
+        bounds.add(TypeName.get(bound, map));
+      }
+      bounds.remove(OBJECT);
+    }
+    return result;
   }
 }

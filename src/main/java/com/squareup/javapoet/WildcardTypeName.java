@@ -18,6 +18,7 @@ package com.squareup.javapoet;
 import java.io.IOException;
 import java.lang.reflect.Type;
 import java.lang.reflect.WildcardType;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -33,6 +34,12 @@ public final class WildcardTypeName extends TypeName {
   public final List<TypeName> lowerBounds;
 
   private WildcardTypeName(List<TypeName> upperBounds, List<TypeName> lowerBounds) {
+    this(upperBounds, lowerBounds, new ArrayList<AnnotationSpec>());
+  }
+
+  private WildcardTypeName(List<TypeName> upperBounds, List<TypeName> lowerBounds,
+      List<AnnotationSpec> annotations) {
+    super(annotations);
     this.upperBounds = Util.immutableList(upperBounds);
     this.lowerBounds = Util.immutableList(lowerBounds);
 
@@ -47,14 +54,12 @@ public final class WildcardTypeName extends TypeName {
     }
   }
 
-  @Override public boolean equals(Object o) {
-    return o instanceof WildcardTypeName
-        && ((WildcardTypeName) o).upperBounds.equals(upperBounds)
-        && ((WildcardTypeName) o).lowerBounds.equals(lowerBounds);
+  @Override public WildcardTypeName annotated(List<AnnotationSpec> annotations) {
+    return new WildcardTypeName(upperBounds, lowerBounds, concatAnnotations(annotations));
   }
 
-  @Override public int hashCode() {
-    return upperBounds.hashCode() ^ lowerBounds.hashCode();
+  @Override public TypeName withoutAnnotations() {
+    return new WildcardTypeName(upperBounds, lowerBounds);
   }
 
   @Override CodeWriter emit(CodeWriter out) throws IOException {
@@ -113,8 +118,12 @@ public final class WildcardTypeName extends TypeName {
   }
 
   public static TypeName get(WildcardType wildcardName) {
+    return get(wildcardName, new LinkedHashMap<Type, TypeVariableName>());
+  }
+
+  static TypeName get(WildcardType wildcardName, Map<Type, TypeVariableName> map) {
     return new WildcardTypeName(
-        list(wildcardName.getUpperBounds()),
-        list(wildcardName.getLowerBounds()));
+        list(wildcardName.getUpperBounds(), map),
+        list(wildcardName.getLowerBounds(), map));
   }
 }
